@@ -40,14 +40,76 @@
 #include "STM32LowPower.h"
 #include "STM32IntRef.h"
 
+#include "sml.h"
+#include <RingBuf.h>
+
 void do_send(osjob_t* j);
 
-// for debugging redirect to hardware Serial2
-// Tx on PA2
-#define Serial Serial2
+// #define Serial Serial2
 HardwareSerial Serial2(USART2);   // or HardWareSerial Serial2 (PA3, PA2);
 
+#define MAX_BUF_SIZE 700
 
+sml_states_t currentState;
+
+RingBuf<unsigned char, MAX_BUF_SIZE> myBuffer;
+
+void print_buffer(){
+  
+  unsigned int i = 0;
+  unsigned int j = 0;
+  char b[5];
+  Serial.print(F("Size: "));
+  Serial.print(myBuffer.size());
+  Serial.println("");
+  Serial.println(F("--- "));
+  for (j = 0; j < myBuffer.size(); j++) {
+    i++;
+    sprintf(b, "0x%02X", myBuffer[j]);
+    Serial.print(b);
+    if (j < myBuffer.size() - 1) {
+      Serial.print(", ");
+    }
+    else {
+      Serial.println("");
+      Serial.println(F("--- "));
+    }
+    if ((i % 15) == 0) {
+      Serial.println("");
+      i = 0;
+    }
+  }
+}
+
+void readByte(unsigned char currentChar)
+{
+  Serial.printf("%02x",currentChar);
+  currentState = smlState(currentChar);
+  if (currentState == SML_START) {
+    myBuffer.clear();
+    myBuffer.push(0x1B);
+    myBuffer.push(0x1B);
+    myBuffer.push(0x1B);
+  }
+  else {
+    if (myBuffer.size() < MAX_BUF_SIZE) {
+      myBuffer.push(currentChar);
+    }
+    else {
+      Serial.print(F(">>> Message larger than MAX_BUF_SIZE\n"));
+    }
+  }
+  if (currentState == SML_UNEXPECTED) {
+    Serial.print(F(">>> Unexpected byte\n"));
+  }
+  if (currentState == SML_FINAL) {
+    Serial.print(F(">>> Successfully received a complete message!\n"));
+    print_buffer();
+  }
+  if (currentState == SML_CHECKSUM_ERROR) {
+    Serial.print(F(">>> Checksum error.\n"));
+  }
+}
 
 // include security credentials OTAA, check secconfig_example.h for more information
 #include "secconfig.h"
@@ -72,106 +134,107 @@ static osjob_t sendjob;
 
 // Sleep this many microseconds. Notice that the sending and waiting for downlink
 // will extend the time between send packets. You have to extract this time
-#define SLEEP_INTERVAL 300000
+// #define SLEEP_INTERVAL 300000
+#define SLEEP_INTERVAL 30000
 
 // Pin mapping for the MiniPill LoRa with the RFM95 LoRa chip
 const lmic_pinmap lmic_pins =
-{
-  .nss = PA4,
-  .rxtx = LMIC_UNUSED_PIN,
-  .rst = PA9,
-  .dio = {PA10, PB4, PB5},
+    {
+        .nss = PA4,
+        .rxtx = LMIC_UNUSED_PIN,
+        .rst = PA9,
+        .dio = {PA10, PB4, PB5},
 };
 
 // event called by os on events
-void onEvent (ev_t ev)
+void onEvent(ev_t ev)
 {
-  //   Serial.print(os_getTime());
-  //   Serial.print(": ");
-     switch(ev) {
-         case EV_SCAN_TIMEOUT:
-    //         Serial.println(F("EV_SCAN_TIMEOUT"));
-             break;
-         case EV_BEACON_FOUND:
-    //         Serial.println(F("EV_BEACON_FOUND"));
-             break;
-         case EV_BEACON_MISSED:
-    //         Serial.println(F("EV_BEACON_MISSED"));
-             break;
-         case EV_BEACON_TRACKED:
-    //         Serial.println(F("EV_BEACON_TRACKED"));
-             break;
-         case EV_JOINING:
-    //         Serial.println(F("EV_JOINING"));
-             break;
-         case EV_JOINED:
-    //         Serial.println(F("EV_JOINED"));
+  Serial.print(os_getTime());
+  Serial.print(": ");
+  switch (ev)
+  {
+  case EV_SCAN_TIMEOUT:
+    Serial.println(F("EV_SCAN_TIMEOUT"));
+    break;
+  case EV_BEACON_FOUND:
+    Serial.println(F("EV_BEACON_FOUND"));
+    break;
+  case EV_BEACON_MISSED:
+    Serial.println(F("EV_BEACON_MISSED"));
+    break;
+  case EV_BEACON_TRACKED:
+    Serial.println(F("EV_BEACON_TRACKED"));
+    break;
+  case EV_JOINING:
+    Serial.println(F("EV_JOINING"));
+    break;
+  case EV_JOINED:
+    Serial.println(F("EV_JOINED"));
 
-             // Disable link check validation (automatically enabled
-             // during join, but not supported by TTN at this time).
-             LMIC_setLinkCheckMode(0);
-             break;
-         case EV_RFU1:
-    //         Serial.println(F("EV_RFU1"));
-             break;
-         case EV_JOIN_FAILED:
-    //         Serial.println(F("EV_JOIN_FAILED"));
-             break;
-         case EV_REJOIN_FAILED:
-    //         Serial.println(F("EV_REJOIN_FAILED"));
-             break;
-             break;
-         case EV_TXCOMPLETE:
-    //         Serial.println(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
-             if (LMIC.txrxFlags & TXRX_ACK)
-    //           Serial.println(F("Received ack"));
-             if (LMIC.dataLen)
-             {
-    //           Serial.print(F("Received "));
-    //           Serial.print(LMIC.dataLen);
-    //           Serial.println(F(" bytes of payload"));
-               // print data
-               for (int i = 0; i < LMIC.dataLen; i++)
-               {
-    //             Serial.print(LMIC.frame[LMIC.dataBeg + i], HEX);
-               }
-    //           Serial.println();
-             }
-    //         Serial.println("going to sleep");
-             // reset low power parameters
-             LowPower.begin();
-             delay(100);
-             // set PA6 to analog to reduce power due to currect flow on DIO on BME280
-             pinMode(PA6, INPUT_ANALOG);
-             // take SLEEP_INTERVAL time to sleep
-             LowPower.deepSleep(SLEEP_INTERVAL);
+    // Disable link check validation (automatically enabled
+    // during join, but not supported by TTN at this time).
+    LMIC_setLinkCheckMode(0);
+    break;
+  case EV_RFU1:
+    Serial.println(F("EV_RFU1"));
+    break;
+  case EV_JOIN_FAILED:
+    Serial.println(F("EV_JOIN_FAILED"));
+    break;
+  case EV_REJOIN_FAILED:
+    Serial.println(F("EV_REJOIN_FAILED"));
+    break;
+    break;
+  case EV_TXCOMPLETE:
+    Serial.println(F("EV_TXCOMPLETE (includes waiting for RX windows)"));
+    if (LMIC.txrxFlags & TXRX_ACK)
+      Serial.println(F("Received ack"));
+    if (LMIC.dataLen)
+    {
+      Serial.print(F("Received "));
+      Serial.print(LMIC.dataLen);
+      Serial.println(F(" bytes of payload"));
+      // print data
+      for (int i = 0; i < LMIC.dataLen; i++)
+      {
+        Serial.print(LMIC.frame[LMIC.dataBeg + i], HEX);
+      }
+      Serial.println();
+    }
+    Serial.println("going to sleep");
+    // reset low power parameters
+    LowPower.begin();
+    delay(100);
+    // set PA6 to analog to reduce power due to currect flow on DIO on BME280
+    pinMode(PA6, INPUT_ANALOG);
+    // take SLEEP_INTERVAL time to sleep
+    LowPower.deepSleep(SLEEP_INTERVAL);
 
-    //         Serial.println("queing next job");
-            // next transmission
-             do_send(&sendjob);
+    // Serial.println("queing next job");
+    // next transmission
+    do_send(&sendjob);
 
-
-             break;
-         case EV_LOST_TSYNC:
-    //         Serial.println(F("EV_LOST_TSYNC"));
-             break;
-         case EV_RESET:
-      //       Serial.println(F("EV_RESET"));
-             break;
-         case EV_RXCOMPLETE:
-             // data received in ping slot
-    //         Serial.println(F("EV_RXCOMPLETE"));
-             break;
-         case EV_LINK_DEAD:
-    //         Serial.println(F("EV_LINK_DEAD"));
-             break;
-         case EV_LINK_ALIVE:
-    //         Serial.println(F("EV_LINK_ALIVE"));
-             break;
-          default:
-    //         Serial.println(F("Unknown event"));
-             break;
-     }
+    break;
+  case EV_LOST_TSYNC:
+    Serial.println(F("EV_LOST_TSYNC"));
+    break;
+  case EV_RESET:
+    Serial.println(F("EV_RESET"));
+    break;
+  case EV_RXCOMPLETE:
+    // data received in ping slot
+    Serial.println(F("EV_RXCOMPLETE"));
+    break;
+  case EV_LINK_DEAD:
+    Serial.println(F("EV_LINK_DEAD"));
+    break;
+  case EV_LINK_ALIVE:
+    Serial.println(F("EV_LINK_ALIVE"));
+    break;
+  default:
+    Serial.println(F("Unknown event"));
+    break;
+  }
 }
 
 //
@@ -180,9 +243,19 @@ void do_send(osjob_t* j)
   // Check if there is not a current TX/RX job running
   if (LMIC.opmode & OP_TXRXPEND)
   {
-//         Serial.println(F("OP_TXRXPEND, not sending"));
+    Serial.println(F("OP_TXRXPEND, not sending"));
   } else
   {
+    Serial.println(F("beginning to read SML ..."));
+    while( Serial2.available() <= 0 ) {
+      __asm__("nop\n\t");
+    }
+
+    while (Serial2.available() > 0) {
+      readByte(Serial2.read());
+    }
+
+    Serial.println(F("end of reading SML!!"));
     // Prepare upstream data transmission at the next possible time.
     uint8_t dataLength = 2;
     uint8_t data[dataLength];
@@ -193,7 +266,7 @@ void do_send(osjob_t* j)
     data[1] = (vcc & 0xff);
 
     LMIC_setTxData2(1, data, sizeof(data), 0);
-  //       Serial.println(F("Packet queued"));
+    Serial.println(F("Packet queued"));
     // signal with LED that data is queued
     digitalWrite(SIGNAL_LED, LOW);
     delay(1000);
@@ -204,10 +277,11 @@ void do_send(osjob_t* j)
 
 void setup()
 {
-  //   Serial.begin(9600);
+  Serial.begin(9600);
+  Serial2.begin(9600);
   // delay at startup for debugging reasons
   delay(8000);
-  //   Serial.println(F("Starting"));
+  Serial.println(F("Starting"));
 
   // set pin as OUPUT for LED
   pinMode(SIGNAL_LED, OUTPUT);
@@ -263,6 +337,9 @@ void loop()
   PA10 // USART1_RX  DIO0 - RFM95W
   PB4  //            DIO1 - RFM95W
   PB5  //            DIO2 - RFM95W
+
+  PB6  // USART1_TX
+  PB7  // USART1_RX 
 
   PA9  // USART1_TX  RST  - RFM95W
 
