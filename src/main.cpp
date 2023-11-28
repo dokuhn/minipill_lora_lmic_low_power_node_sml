@@ -48,7 +48,28 @@ void do_send(osjob_t* j);
 // #define Serial Serial2
 HardwareSerial Serial2(USART2);   // or HardWareSerial Serial2 (PA3, PA2);
 
-#define MAX_BUF_SIZE 700
+
+double T1Wh = -2, SumWh = -2;
+
+typedef struct {
+  const unsigned char OBIS[6];
+  void (*Handler)();
+} OBISHandler;
+
+
+void PowerT1() { smlOBISWh(T1Wh); }
+
+void PowerSum() { smlOBISWh(SumWh); }
+
+// clang-format off
+OBISHandler OBISHandlers[] = {
+  {{ 0x01, 0x00, 0x01, 0x08, 0x01, 0xff }, &PowerT1},      /*   1-  0:  1.  8.1*255 (T1) */
+  {{ 0x01, 0x00, 0x01, 0x08, 0x00, 0xff }, &PowerSum},     /*   1-  0:  1.  8.0*255 (T1 + T2) */
+  {{ 0, 0 }}
+};
+// clang-format on
+
+#define MAX_BUF_SIZE 1024
 
 sml_states_t currentState;
 
@@ -83,13 +104,18 @@ void print_buffer(){
 
 void readByte(unsigned char currentChar)
 {
-  Serial.printf("%02x",currentChar);
+  char floatBuffer[20];
+  unsigned int i = 0, iHandler = 0;
+  // Serial.printf("%02x",currentChar);
   currentState = smlState(currentChar);
   if (currentState == SML_START) {
     myBuffer.clear();
     myBuffer.push(0x1B);
     myBuffer.push(0x1B);
     myBuffer.push(0x1B);
+    /* reset local vars */
+    T1Wh = -3;
+    SumWh = -3;
   }
   else {
     if (myBuffer.size() < MAX_BUF_SIZE) {
@@ -99,12 +125,34 @@ void readByte(unsigned char currentChar)
       Serial.print(F(">>> Message larger than MAX_BUF_SIZE\n"));
     }
   }
+  if(currentState == SML_LISTEND) {
+        /* check handlers on last received list */
+        for (iHandler = 0; OBISHandlers[iHandler].Handler != 0 &&
+                           !(smlOBISCheck(OBISHandlers[iHandler].OBIS));
+             iHandler++)
+          ;
+        if (OBISHandlers[iHandler].Handler != 0) {
+          OBISHandlers[iHandler].Handler();
+        }
+      }
   if (currentState == SML_UNEXPECTED) {
     Serial.print(F(">>> Unexpected byte\n"));
   }
   if (currentState == SML_FINAL) {
     Serial.print(F(">>> Successfully received a complete message!\n"));
     print_buffer();
+    
+    Serial.print(F("\n"));
+
+    Serial.print(F("Power T1    (1-0:1.8.1)..: "));
+    dtostrf(T1Wh, 10, 3, floatBuffer);
+    Serial.print(floatBuffer);
+    Serial.print(F("\n"));
+
+    Serial.print(F("Power T1+T2 (1-0:1.8.0)..: "));
+    dtostrf(SumWh, 10, 3, floatBuffer);
+    Serial.print(floatBuffer);
+    Serial.print(F("\n\n\n\n"));
   }
   if (currentState == SML_CHECKSUM_ERROR) {
     Serial.print(F(">>> Checksum error.\n"));
