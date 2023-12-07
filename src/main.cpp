@@ -64,7 +64,7 @@ void PowerSum() { smlOBISWh(SumWh); }
 // clang-format off
 OBISHandler OBISHandlers[] = {
   {{ 0x01, 0x00, 0x01, 0x08, 0x01, 0xff }, &PowerT1},      /*   1-  0:  1.  8.1*255 (T1) */
-  {{ 0x01, 0x00, 0x01, 0x08, 0x00, 0xff }, &PowerSum},     /*   1-  0:  1.  8.0*255 (T1 + T2) */
+  // {{ 0x01, 0x00, 0x01, 0x08, 0x00, 0xff }, &PowerSum},     /*   1-  0:  1.  8.0*255 (T1 + T2) */
   {{ 0, 0 }}
 };
 // clang-format on
@@ -74,6 +74,8 @@ OBISHandler OBISHandlers[] = {
 sml_states_t currentState;
 
 RingBuf<unsigned char, MAX_BUF_SIZE> myBuffer;
+
+char floatBuffer[20];
 
 void print_buffer(){
   
@@ -104,7 +106,6 @@ void print_buffer(){
 
 void readByte(unsigned char currentChar)
 {
-  char floatBuffer[20];
   unsigned int i = 0, iHandler = 0;
   // Serial.printf("%02x",currentChar);
   currentState = smlState(currentChar);
@@ -115,7 +116,7 @@ void readByte(unsigned char currentChar)
     myBuffer.push(0x1B);
     /* reset local vars */
     T1Wh = -3;
-    SumWh = -3;
+    // SumWh = -3;
   }
   else {
     if (myBuffer.size() < MAX_BUF_SIZE) {
@@ -149,9 +150,9 @@ void readByte(unsigned char currentChar)
     Serial.print(floatBuffer);
     Serial.print(F("\n"));
 
-    Serial.print(F("Power T1+T2 (1-0:1.8.0)..: "));
-    dtostrf(SumWh, 10, 3, floatBuffer);
-    Serial.print(floatBuffer);
+    // Serial.print(F("Power T1+T2 (1-0:1.8.0)..: "));
+    // dtostrf(SumWh, 10, 3, floatBuffer);
+    // Serial.print(floatBuffer);
     Serial.print(F("\n\n\n\n"));
   }
   if (currentState == SML_CHECKSUM_ERROR) {
@@ -183,7 +184,7 @@ static osjob_t sendjob;
 // Sleep this many microseconds. Notice that the sending and waiting for downlink
 // will extend the time between send packets. You have to extract this time
 // #define SLEEP_INTERVAL 300000
-#define SLEEP_INTERVAL 30000
+#define SLEEP_INTERVAL 300000
 
 // Pin mapping for the MiniPill LoRa with the RFM95 LoRa chip
 const lmic_pinmap lmic_pins =
@@ -294,26 +295,42 @@ void do_send(osjob_t* j)
     Serial.println(F("OP_TXRXPEND, not sending"));
   } else
   {
-    Serial.println(F("beginning to read SML ..."));
-    while( Serial2.available() <= 0 ) {
-      __asm__("nop\n\t");
+    uint32_t timeout_cnt = 0;
+    Serial.print(os_getTime());
+    Serial.print(": ");
+    Serial.print(F("beginning to read SML ..."));
+    while( (Serial2.available() <= 0) && (timeout_cnt <= 500) ) {
+      // __asm__("nop\n\t");
+      delay(10);
+      timeout_cnt += 1;
     }
 
-    while (Serial2.available() > 0) {
-      readByte(Serial2.read());
+    if (timeout_cnt > 500)
+    {
+      Serial.print(F("timeout while reading!!\n"));
+    }
+    else
+    {
+      while (Serial2.available() > 0)
+      {
+        readByte(Serial2.read());
+      }
+
+      
+
+      Serial.print(F("end of reading SML!!"));
     }
 
-    Serial.println(F("end of reading SML!!"));
     // Prepare upstream data transmission at the next possible time.
-    uint8_t dataLength = 2;
-    uint8_t data[dataLength];
+    // uint8_t dataLength = 2;
+    // uint8_t data[dataLength];
 
     // read vcc and add to bytebuffer
-    int32_t vcc = IntRef.readVref();
-    data[0] = (vcc >> 8) & 0xff;
-    data[1] = (vcc & 0xff);
+    // int32_t vcc = IntRef.readVref();
+    // data[0] = (vcc >> 8) & 0xff;
+    // data[1] = (vcc & 0xff);
 
-    LMIC_setTxData2(1, data, sizeof(data), 0);
+    LMIC_setTxData2(1, (uint8_t* )floatBuffer, sizeof(floatBuffer), 0);
     Serial.println(F("Packet queued"));
     // signal with LED that data is queued
     digitalWrite(SIGNAL_LED, LOW);
@@ -340,7 +357,7 @@ void setup()
   // Reset the MAC state. Session and pending data transfers will be discarded.
   LMIC_reset();
   // to incrise the size of the RX window.
-  LMIC_setClockError(MAX_CLOCK_ERROR * 1 / 100);
+  LMIC_setClockError(MAX_CLOCK_ERROR * 25 / 100);
 
   // Set static session parameters when using ABP.
   // Instead of dynamically establishing a session
@@ -360,7 +377,7 @@ void setup()
   // prevent some downlink messages, TTN advanced setup is set to the default 5
   LMIC.rxDelay = 5;
   // Set data rate and transmit power for uplink (note: txpow seems to be ignored by the library)
-  LMIC_setDrTxpow(DR_SF7,14);
+  LMIC_setDrTxpow(DR_SF12,14);
   #endif
 
   // Configure low power at startup
